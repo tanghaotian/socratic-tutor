@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Socratic Tutor</title>
+  <script src="https://unpkg.com/vue@3.4/dist/vue.global.prod.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, "Segoe UI", sans-serif; background: #f5f7fa; color: #1f2933; }
+    #app { display: flex; height: 100vh; }
+    aside { width: 220px; background: #233; color: #eef; display: flex; flex-direction: column; }
+    aside h1 { font-size: 18px; padding: 16px; border-bottom: 1px solid #3344; }
+    nav button { background: none; border: none; color: #cfe; text-align: left; padding: 12px 16px; font-size: 14px; cursor: pointer; }
+    nav button.active { background: #2a4; }
+    main { flex: 1; display: flex; flex-direction: column; padding: 16px; gap: 16px; overflow: auto; }
+    .card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .messages { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 10px; min-height: 300px; }
+    .msg { max-width: 75%; padding: 10px 14px; border-radius: 12px; line-height: 1.5; white-space: pre-wrap; }
+    .msg.agent { align-self: flex-start; background: #e9f2ff; }
+    .msg.user { align-self: flex-end; background: #d9f2e6; }
+    input[type=text] { flex: 1; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; }
+    button.btn { padding: 10px 16px; border: none; border-radius: 8px; background: #2a82d8; color: #fff; cursor: pointer; }
+    button.btn.ghost { background: #eee; color: #333; }
+    .inputrow { display: flex; gap: 8px; }
+    .field { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; font-size: 13px; color: #444; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+    .badge.draft { background: #ffe9c7; color: #8a5a00; }
+    .badge.confirmed { background: #d7f3df; color: #1a7a3a; }
+    section.list { display: flex; flex-direction: column; gap: 12px; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <h1>Socratic Tutor</h1>
+    <nav>
+      <button :class="{active: tab==='chat'}" @click="tab='chat'">对话</button>
+      <button :class="{active: tab==='profile'}" @click="loadProfile(); tab='profile'">学习画像</button>
+      <button :class="{active: tab==='reflection'}" @click="loadReflection(); tab='reflection'">反思/升级</button>
+      <button :class="{active: tab==='plans'}" @click="loadPlans(); tab='plans'">计划/复盘</button>
+    </nav>
+  </aside>
+
+  <main>
+    <!-- 对话 -->
+    <div class="card" style="flex:1; display:flex; flex-direction:column" v-show="tab==='chat'">
+      <h2>对话启发</h2>
+      <div class="field"><label>当前学习主题</label>
+        <input type="text" v-model="topic" placeholder="例如：微积分" /></div>
+      <div class="messages">
+        <div class="msg agent" v-for="(m,i) in messages" :key="i" :class="m.role">{{ m.text }}</div>
+      </div>
+      <div class="inputrow">
+        <input type="text" v-model="input" @keyup.enter="send" placeholder="输入你的回答…" />
+        <button class="btn" @click="toggleRec" :class="{ghost: !recording}">{{ recording ? '■ 停止' : '🎤 录音' }}</button>
+        <button class="btn" @click="send">发送</button>
+      </div>
+      <div v-if="transcribing" class="field">语音识别中…</div>
+    </div>
+
+    <!-- 画像 -->
+    <div class="card" v-show="tab==='profile'">
+      <h2>学习画像</h2>
+      <section class="list">
+        <div class="field">总学习次数：{{ profile.frequency.totalSessions ?? 0 }}</div>
+        <div class="field">周均学习：{{ profile.frequency.weeklyAvg ?? 0 }} 次</div>
+        <div v-for="(v,key) in profile.mastery" :key="key" class="field">
+          {{ key }}：掌握度 {{ (v.level*100).toFixed(0) }}%，错误 {{ v.mistakes.length }} 次
+        </div>
+      </section>
+    </div>
+
+    <!-- 反思/升级 -->
+    <div class="card" v-show="tab==='reflection'">
+      <h2>每周反思升级</h2>
+      <div class="inputrow" style="margin-bottom:12px">
+        <button class="btn" @click="runReflection" :disabled="refreshing">{{ refreshing ? '生成中…' : '手动触发反思' }}</button>
+      </div>
+      <section class="list" v-if="report">
+        <div>
+          日期：{{ report.date }} · 触发：{{ report.trigger }}
+          <span class="badge" :class="report.status">{{ report.status }}</span>
+        </div>
+        <div><strong>观察点</strong></div>
+        <div v-for="(o,i) in report.observations" :key="'o'+i">· {{ o }}</div>
+        <div><strong>建议改进</strong></div>
+        <div v-for="(o,i) in report.improvements" :key="'i'+i">· {{ o }}</div>
+        <div><strong>新增功能需求</strong></div>
+        <div v-for="(o,i) in report.newFeatureRequests" :key="'n'+i">· {{ o }}</div>
+        <button class="btn" v-if="report.status==='draft'" @click="confirmReflection">✅ 确认升级</button>
+        <span v-else class="field" style="color:#1a7a3a">已确认，等待进入设计/开发</span>
+      </section>
+      <div v-else class="field">暂无反思报告，点击上方按钮生成。</div>
+    </div>
+
+    <!-- 计划/复盘 -->
+    <div class="card" v-show="tab==='plans'">
+      <h2>学习计划 + 复盘</h2>
+
+      <div class="field"><label>目标主题</label>
+        <input type="text" v-model="planTopic" placeholder="例如：微积分" @keyup.enter="genPlan" /></div>
+      <div class="inputrow" style="margin-bottom:12px">
+        <button class="btn" @click="genPlan" :disabled="planBusy">{{ planBusy ? '生成中…' : '生成学习计划' }}</button>
+        <button class="btn ghost" @click="loadPlans">刷新</button>
+      </div>
+
+      <!-- 学习计划 -->
+      <section class="list" v-if="plan">
+        <div>
+          周期：{{ (plan.period.start||'').slice(0,10) }} ~ {{ (plan.period.end||'').slice(0,10) }}
+          <span class="badge" :class="plan.status">{{ plan.status }}</span>
+        </div>
+        <div v-for="g in plan.goals" :key="g.topicId" class="field">
+          {{ g.topicId }}：目标掌握度 {{ (g.targetLevel*100).toFixed(0) }}%，目标深度 {{ g.targetDepth }}，计划 {{ g.sessions }} 次
+        </div>
+        <div class="field"><label>锚点</label>目标难度 {{ plan.anchors.targetDifficulty.toFixed(2) }} · 速度基线 {{ plan.anchors.learningSpeedBaseline.toFixed(2) }} · 重复偏向 {{ plan.anchors.repetitionBias }}</div>
+        <button class="btn" v-if="plan.status==='draft'" @click="confirmPlan">✅ 确认学习计划</button>
+      </section>
+      <div v-else class="field">暂无学习计划，输入主题后点击生成。</div>
+
+      <hr style="margin:16px 0;border:none;border-top:1px solid #eee" />
+
+      <!-- 复盘 -->
+      <div class="inputrow" style="margin-bottom:12px">
+        <button class="btn" @click="genReview" :disabled="reviewBusy">{{ reviewBusy ? '生成中…' : '生成复盘' }}</button>
+      </div>
+      <section class="list" v-if="review">
+        <div>
+          周期：{{ (review.period.start||'').slice(0,10) }} ~ {{ (review.period.end||'').slice(0,10) }}
+          <span class="badge" :class="review.status">{{ review.status }}</span>
+        </div>
+        <div class="field" v-for="(v,k) in scoreRows" :key="k">
+          {{ v.label }}：{{ (v.value*100).toFixed(0) }}%
+          <div style="background:#eee;border-radius:6px;height:8px;margin-top:4px">
+            <div :style="{width: (v.value*100)+'%', background:'#2a82d8', height:'8px', borderRadius:'6px'}"></div>
+          </div>
+        </div>
+        <div><strong>复盘发现</strong></div>
+        <div v-for="(o,i) in review.findings" :key="'f'+i">· {{ o }}</div>
+        <div><strong>后续建议</strong></div>
+        <div v-for="(o,i) in review.improvementNotes" :key="'n'+i">· {{ o }}</div>
+        <button class="btn" v-if="review.status==='draft'" @click="confirmReview">✅ 确认复盘</button>
+        <div v-if="anchorAdjustment" class="field" style="color:#8a5a00">
+          锚定反思已触发（{{ anchorAdjustment.method }}）：目标难度 {{ anchorAdjustment.after.targetDifficulty.toFixed(2) }}（原 {{ anchorAdjustment.before.targetDifficulty.toFixed(2) }}）· 速度基线 {{ anchorAdjustment.after.learningSpeedBaseline.toFixed(2) }}（原 {{ anchorAdjustment.before.learningSpeedBaseline.toFixed(2) }}）
+        </div>
+      </section>
+      <div v-else class="field">暂无复盘，确认学习计划后可生成。</div>
+
+      <hr style="margin:16px 0;border:none;border-top:1px solid #eee" />
+
+      <!-- 策略进化（组合加权评测） -->
+      <div class="field"><label>已应用策略</label>
+        <div v-if="strategies.length===0">默认启发式（plans.default + reviews.default）</div>
+        <div v-for="s in strategies" :key="s.kind+s.id">{{ s.kind }} · {{ s.id }} · v{{ s.version }}</div>
+      </div>
+      <div class="inputrow">
+        <button class="btn ghost" @click="runStrategyEval" :disabled="evalBusy">{{ evalBusy ? '评测中…' : '手动策略评测' }}</button>
+      </div>
+      <div v-if="evalResult" class="field">
+        评测：verdict=<b>{{ evalResult.report.verdict }}</b>（plan {{ evalResult.report.planScore.candidate.toFixed(2) }} vs {{ evalResult.report.planScore.baseline.toFixed(2) }} · review {{ evalResult.report.reviewScore.candidate.toFixed(2) }} vs {{ evalResult.report.reviewScore.baseline.toFixed(2) }} · combined {{ evalResult.report.combined.candidate.toFixed(2) }} vs {{ evalResult.report.combined.baseline.toFixed(2) }}）{{ evalResult.applied ? '→ 已应用' : '' }}
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const { createApp } = Vue;
+createApp({
+  data() {
+    return { tab: 'chat', topic: '', input: '', messages: [], profile: {}, report: null, refreshing: false, recording: false, transcribing: false, mediaRec: null, chunks: [], planTopic: '', plan: null, review: null, anchorAdjustment: null, strategies: [], planBusy: false, reviewBusy: false, evalBusy: false, evalResult: null };
+  },
+  computed: {
+    scoreRows() {
+      if (!this.review) return [];
+      const s = this.review.scores;
+      return [
+        { label: '综合加权', value: s.weighted },
+        { label: '目标完成率', value: s.goalCompletion },
+        { label: '信号正确率', value: s.signalAccuracy },
+        { label: '频率达成率', value: s.frequencyRate },
+        { label: '掌握度变化', value: s.masteryChange },
+      ];
+    },
+  },
+  methods: {
+    async api(path, opts) {
+      const r = await fetch(path, opts);
+      return r.json();
+    },
+    async send() {
+      const text = this.input.trim();
+      if (!text) return;
+      this.messages.push({ role: 'user', text });
+      this.input = '';
+      const topicId = this.topic || undefined;
+      const res = await this.api('/api/chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, topicId }),
+      });
+      const act = res.reply;
+      const agentMsg = act && act.content ? act.content : (JSON.stringify(act));
+      this.messages.push({ role: 'agent', text: `[${act && act.type}:${act && act.strategy}] ${agentMsg}` });
+    },
+    async toggleRec() {
+      if (this.recording) { await this.stopRec(); return; }
+      if (!navigator.mediaDevices || !window.MediaRecorder) { alert('当前浏览器不支持录音'); return; }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        this.mediaRec = new MediaRecorder(stream);
+        this.chunks = [];
+        this.mediaRec.ondataavailable = (e) => this.chunks.push(e.data);
+        this.mediaRec.onstop = () => this.sendVoice();
+        this.mediaRec.start();
+        this.recording = true;
+      } catch (e) { alert('无法访问麦克风: ' + e); }
+    },
+    async stopRec() {
+      this.recording = false;
+      if (this.mediaRec && this.mediaRec.state !== 'inactive') this.mediaRec.stop();
+    },
+    async sendVoice() {
+      if (!this.chunks.length) return;
+      this.transcribing = true;
+      const blob = new Blob(this.chunks, { type: 'audio/webm' });
+      const fd = new FormData();
+      fd.append('file', blob, 'rec.webm');
+      if (this.topic) fd.append('topicId', this.topic);
+      try {
+        const res = await this.api('/api/voice/chat', { method: 'POST', body: fd });
+        if (res.transcribedText) this.messages.push({ role: 'user', text: '🎤 ' + res.transcribedText });
+        this.messages.push({ role: 'agent', text: res.replyType || res.replyText });
+        if (res.audioUrl) {
+          const au = new Audio(res.audioUrl);
+          au.onloadeddata = () => au.play();
+        }
+      } finally { this.transcribing = false; }
+    },
+    async loadProfile() {
+      this.profile = await this.api('/api/profile');
+    },
+    async runReflection() {
+      this.refreshing = true;
+      try {
+        const res = await this.api('/api/reflect', { method: 'POST' });
+        this.report = res.report;
+      } finally { this.refreshing = false; }
+    },
+    async loadReflection() {
+      const res = await this.api('/api/reflection/latest');
+      this.report = res;
+    },
+    async confirmReflection() {
+      if (!this.report) return;
+      const res = await this.api(`/api/reflect/${this.report.id}/confirm`, { method: 'POST' });
+      await this.loadReflection();
+    },
+    async loadPlans() {
+      this.plan = await this.api('/api/plan/latest');
+      this.review = await this.api('/api/review/latest');
+      this.strategies = await this.api('/api/strategy/active');
+    },
+    async genPlan() {
+      const topicId = (this.planTopic || '').trim();
+      if (!topicId) { alert('请输入目标主题'); return; }
+      this.planBusy = true;
+      try {
+        const res = await this.api('/api/plan/generate', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topicId }),
+        });
+        this.plan = res.plan;
+      } finally { this.planBusy = false; }
+    },
+    async confirmPlan() {
+      if (!this.plan) return;
+      await this.api(`/api/plan/${this.plan.id}/confirm`, { method: 'POST' });
+      await this.loadPlans();
+    },
+    async genReview() {
+      this.reviewBusy = true;
+      try {
+        const res = await this.api('/api/review/generate', { method: 'POST' });
+        this.review = res.review;
+      } catch (e) { alert('复盘生成失败：' + (e.message || e)); }
+      finally { this.reviewBusy = false; }
+    },
+    async confirmReview() {
+      if (!this.review) return;
+      const res = await this.api(`/api/review/${this.review.id}/confirm`, { method: 'POST' });
+      this.anchorAdjustment = res.anchorAdjustment;
+      await this.loadPlans();
+    },
+    async runStrategyEval() {
+      this.evalBusy = true;
+      try {
+        const res = await this.api('/api/strategy/eval', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ candidate: [
+            { id: 'plans.adaptive', kind: 'plan', version: '1.1.0', planPrompt: '优先安排薄弱主题，会话次数随掌握度提升而递减', weights: { goalCompletion: 0.5, signalAccuracy: 0.2, frequencyRate: 0.15, masteryChange: 0.15 } },
+            { id: 'reviews.adaptive', kind: 'review', version: '1.1.0', reviewPrompt: '给出更细粒度的薄弱点归因与下一步行动清单' },
+          ] }),
+        });
+        this.evalResult = res;
+        await this.loadPlans();
+      } finally { this.evalBusy = false; }
+    },
+  },
+}).mount('#app');
+</script>
+</body>
+</html>
