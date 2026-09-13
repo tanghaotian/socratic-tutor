@@ -458,7 +458,8 @@
 ### 前置 1：回滚点（git 首次提交）
 
 - **问题**：`.git` 已初始化、`.gitignore` 已生效，但 `master` **0 个 commit**，全部工程文件 untracked —— 架构级改动**无回滚点**。
-- **处置**：完成首次提交（`data/`、`.env`、`node_modules/`、`dist/` 确认未被跟踪）。
+- **处置**：完成首次提交 **`9abe127`**（114 文件）；作者身份经用户确认 `tanghaotian <545804513@qq.com>`（`git config --local`，仅本仓库，不污染全局）。
+- **入库前核实**：`.env`（含真实 qwen key）、`data/`、`dist/`、`node_modules/` 均被 `.gitignore` 正确忽略，并经 `git ls-files` 复核**未入库**；提交后工作区 clean。
 
 ### 前置 2：修 BUG-004（history 恒为空）
 
