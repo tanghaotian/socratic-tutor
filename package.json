@@ -6,7 +6,7 @@
   "type": "module",
   "main": "dist/index.js",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -16,6 +16,7 @@
     "voice:verify": "node scripts/verify-voice.mjs",
     "seed:threads": "node scripts/seed-threads.mjs",
     "verify:bug004": "node scripts/verify-bug004.mjs",
+    "verify:readme": "node scripts/verify-readme-pairing.mjs",
     "assess:sample": "node scripts/assess-eval-sample.mjs"
   },
   "dependencies": {

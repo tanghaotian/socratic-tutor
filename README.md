@@ -1,74 +1,233 @@
-# Socratic Tutor — Conversational Socratic Teaching Agent
+# Socratic Tutor
 
-> Version: 0.7.0 · Stack: Node.js / TypeScript
+English | [中文](README.zh.md)
 
-A local personal-learning companion agent built around **Socratic dialogue**. Instead of handing out answers, it guides you to think, explore, and construct understanding through layered questions. It **adapts the teaching plan** based on the quality of each answer and your study frequency, and supports **weekly self-reflection upgrades** plus **book/paper/video summarization & retrieval**.
+A self-hosted learning companion that teaches by **asking instead of answering**. It runs as a local web
+service, keeps a learner profile, and adapts its teaching plan to how well you actually answer.
 
-## Core Mechanisms
+The core mechanism is Socratic dialogue: open question → focused follow-up → cognitive conflict →
+self-evaluation → hint. Every answer you give is classified into a signal (`correct` / `confused` /
+`mistake` / `divergent`), which updates your profile and drives the next question. The project also
+carries a self-evaluation loop: it periodically reviews its own teaching quality and proposes upgrades
+that **only take effect after you confirm them**.
 
-1. **Socratic Dialogue**: open question → focus → cognitive conflict → self-evaluation → timely hint; with voice support (Phase 1 non-realtime, Phase 2 realtime & interruptible, interaction modeled on Doubao).
-2. **Self-Reflection (吾日三省吾身)**: a scheduled weekly scan (default Fri 19:00, configurable) generates an *Upgrade Requirement Document*; only after your confirmation does it proceed to design → development plan → update.
-3. **Resource Summarization & Retrieval**: web search, structured summaries of books/papers/videos, and `book-to-skill` processing that outputs markdown into the local `knowledge/skills/`.
-4. **Study Plan + Review stages**: generates a per-topic study plan md (goals/depth/sessions) → generates a review md (4-dimension weighted score) at period end; confirming the review **cross-checks** it against the plan to update the profile, and **N consecutive low weighted scores** auto-trigger **anchor reflection** (LLM/heuristic anchor correction + audit log); both stages' generation capabilities evolve via **combined weighted eval** (plan+review joint A/B scoring), applied only when approved.
+- **Version**: 0.7.0
+- **Stack**: Node.js 22+ / TypeScript, Fastify, SQLite (built-in `node:sqlite`), single-file Vue 3 frontend
+- **Status**: personal/local use. Single user (`local-user`), no multi-tenant auth, no container image yet.
 
-## Architecture Overview
+Review the [known limitations](#known-limitations) before real use — several pieces are honest
+scaffolding rather than finished features.
+
+## Features
+
+- **Adaptive Socratic dialogue** — answer signals drive question type, depth, and prompt level.
+- **Learner profile & adaptation** — mastery, mistakes/strengths, interest weights, learning speed.
+- **Study plan + review stages** — per-topic plan md → period-end review md with a 4-dimension weighted
+  score → cross-check updates the profile; repeated low scores trigger **anchor reflection**.
+- **Weekly self-reflection** — scheduled job generates an *Upgrade Requirement Document* for your approval.
+- **Resource engine** — structured summaries of books/papers/videos, `book-to-skill` markdown into
+  `knowledge/skills/`, plus retrieval over that local knowledge (keyword, or hybrid with embeddings).
+- **Voice (Phase 1, non-realtime)** — upload a recording → ASR → dialogue → TTS. Falls back to Mock when
+  unconfigured, and says so out loud.
+- **MCP server** — exposes the same capabilities to MCP clients (IDE agents) over Streamable HTTP at `POST /mcp`.
+- **Evaluation gate** — frozen-thread replay + rubric LLM-as-Judge + A/B win rate, gating any skill or
+  strategy change behind a machine verdict **and** human approval.
+
+## Architecture
 
 ```
-Presentation (Web UI / IDE Agent) → API (HTTP/WS/MCP) → Application (teaching/profile/reflection/resource engines)
-   → Adapters (LLM/ASR/TTS/Reminder Provider) → Infrastructure (storage/RAG/scheduler)
+Presentation (Web UI / MCP client)
+  → API (Fastify REST / MCP over HTTP JSON-RPC)
+    → Engines (teaching · profile · reflection · resource · plans · skillgen · eval)
+      → Providers (LLM · ASR · TTS · search · reminder)
+        → Infrastructure (SQLite · RAG / vectors · scheduler · locks · tracing)
 ```
 
-- **Switchable models (config-driven)**: LLM Provider abstraction over a single OpenAI-compatible registry `config.llm.models`. Doubao / DeepSeek / Qwen are built in (`LLM_PROVIDER=qwen` → `qwen3.7-flash`); any extra OpenAI-compatible model is added via a single JSON entry in `LLM_EXTRA_MODELS` — **zero code**.
-- **Dedicated eval judge**: low-volume, so a stronger model can be used for LLM-as-Judge via `JUDGE_PROVIDER`/`JUDGE_MODEL` (defaults to the main model).
-- **Deployable + IDE integration**: local web service first; containerization reserved; an **MCP Server (0.7.0)** exposes the same capabilities to IDEs (TRAE first, Claude Code later) over HTTP JSON-RPC at `POST /mcp` — `chat_socratic`, `get_learner_profile`, `trigger_reflection`, `confirm_upgrade`, `summarize_resource`, `plan_generate`, `review_generate`.
-- **AI localization boundary**: a Python sidecar plugin slot is reserved to avoid future refactoring around local models.
-- **Scale-out + traffic replay recording (0.6.0)**: Web is stateless and horizontally scalable; scheduled jobs (reflection/eval) run under distributed locks (single-process / file / SQLite backends) so only one instance executes; a pluggable recording layer saves every real chat/voice turn into frozen threads (`data/threads/`) and a sampled golden dataset for replay-based eval (no Kafka in MVP).
+Two design decisions matter more than the layer diagram:
 
-## Project Structure
+- **Engine skills are pluggable.** Teaching and profile engines consume `CapabilitySkill` modules through a
+  `StrategyManager` (stacking, enable/disable, snapshots, `when`-gating, exclusive groups). The default
+  `socratic.core` keeps legacy behavior intact; generated skills stack on top.
+- **Model-agnostic.** One OpenAI-compatible registry (`config.llm.models`) covers Doubao, DeepSeek and Qwen;
+  any other compatible endpoint is added with a single JSON entry in `LLM_EXTRA_MODELS` — no code change.
 
-```
-docs/              requirements, design (overall/detail/debate), development plan, reflections
-knowledge/skills/  book-to-skill output markdown (local knowledge source)
-src/               web / engines / providers / storage / scheduler / mcp
-public/            frontend
-data/              SQLite, profiles, reflections, audio (runtime)
-scripts/           dev / build / voice self-check / seed threads
-```
+## Quick start
 
-## Install & Run
+**Prerequisites**: Node.js **22 or newer** (the storage layer uses the built-in `node:sqlite` module; Node 18
+is not sufficient despite what `package.json` said before 0.7.0 — the declared engine is now aligned to 22).
 
-```bash
-npm install                  # install dependencies
-npm test                     # run unit tests
-cp .env.example .env         # configure DOUBAO_API_KEY, LLM_PROVIDER, etc.
-npm run dev                  # start local web service
+```sh
+git clone git@github.com:tanghaotian/socratic-tutor.git
+cd socratic-tutor
+npm install
+cp .env.example .env
+npm run dev
 ```
 
-**Helper commands** (both require `npm run build` first):
+`cp .env.example .env` copies the template you then fill in with an API key (see [Configuration](#configuration)).
+`npm run dev` starts the web service at `http://127.0.0.1:5173`.
 
-```bash
-npm run seed:threads         # write built-in teaching seed threads to data/threads/ (eval cold start, idempotent)
-npm run voice:verify         # voice pipeline self-check (TTS→ASR round trip; reports Mock mode when unconfigured)
+To run the compiled output instead:
+
+```sh
+npm run build
+npm start
 ```
 
-See `scripts/dev.ps1` / `scripts/dev.sh` for detailed commands.
+`npm run dev` runs TypeScript directly via `tsx` in watch mode; `npm run build` compiles with `tsc` and
+`npm start` runs the compiled output.
 
-> **Real-data backfill**: the seed threads in `data/threads/` are hand-written teaching samples, present only
-> so the evaluation pipeline runs out of the box. Real conversations accumulate automatically via the recording
-> layer; seed files may be deleted at any time, and the eval thresholds/sampling size should be re-validated
-> against real data.
+### Try it
 
-**Progress**: IT1-IT8 (Phase 1, 0.1.0) ✅ · **Phase 1.5 (0.2.0)** ✅ IT9 engine skill plug-in (teaching/profile engines consume pluggable skills via StrategyManager: stacking / enable-disable / snapshot) · IT10 self-built eval gate (snapshot baseline + rubric LLM-as-Judge + A/B win rate, weekly sampling & monthly full replay via `data/threads` + `data/evals`, unified EvalManager interface switchable to promptfoo/agentbench/deepeval; report written to `data/evals/<date>_<engine>_<kind>.json`, verdict needs human approval) ✅ · **IT10b knowledge→skill generation (§8.2.1) ✅** (classifies book-to-skill md as teaching methodology → LLM extracts rules → generates a pure-TS capability skill draft + doc, registers its factory for the eval gate, runs `runEvalGate` for a verdict; a `skillGen` option lets the weekly reflection scan `knowledge/skills/` and record drafts into the report) ✅ · **use step ✅** (`applyGeneratedSkill` persists a confirmed draft to `data/skills/active.json`; engines are assembled via `createEngineManagerFromRegistry` so applied skills are stacked on the default core set at startup) ✅ · **IT10c when-to-use + combo (0.3.0) ✅** (each skill now declares its trigger scenario via `SkillWhen` — concepts/signals/consecutive/profileMasteryLt — gated by `StrategyManager.run`; same-`exclusiveGroup` skills compete via `canHandle` so only the best match runs when combining multiple skills; generated skills embed `when`, `docs/skills/*.md` get a "when-to-use" section) · **IT12 Provider 切换 + 独立评测 judge ✅** (LLM Provider 配置化自动注册（`config.llm.models` 单一事实来源，可经 `LLM_EXTRA_MODELS` 零代码追加任意 OpenAI 兼容模型）；`JUDGE_PROVIDER`/`JUDGE_MODEL` 可让周报/月报评测用独立更强 judge，未配则跟随主模型) · **IT13 0.3.0 wrap-up + real closed loop ✅ (2026-09-09)** (version unified to 0.3.0 across package.json / lock / startup print / READMEs; git initialized with `.gitignore` for `.env`/`data`; with a real Qwen key the whole chain runs on the real LLM: chat signal/action, weekly reflection export, and `skillGen` classify + rule extraction, and the eval gate scored with a real judge (`judgeDegraded=false`). A Feynman-technique skill was generated from `knowledge/skills/feynman-technique.md`, verdict **accepted** (all rubric dimensions +0.5, A/B 3:0, candidate mean 9.1), then applied to `data/skills/active.json` — engine assembly auto-stacks it on `socratic.core` at startup) · **IT14 0.4.0 study plan + review stages ✅ (2026-09-09)** (new `src/engines/plans/`: StudyPlanEngine generates per-topic plan md (draft→confirmed); ReviewEngine scores (goal completion / signal accuracy / frequency / mastery change, weighted & normalized) and generates review md; confirming a review triggers **cross-check** (achieved topics get profile mastery/interest bumps) and **anchor reflection** (N consecutive weighted scores below `PLAN_ANCHOR_THRESHOLD` auto-correct the anchor via LLM first, heuristic fallback, audit to SQLite + `data/anchors/<reviewId>.md`); `eval.ts` provides the **combined weighted eval gate** (plan/review 2-dimension LLM-as-Judge + weighted A/B; `accepted` writes `data/plans/active.json`, assembled over defaults at startup); Web gains `/api/plan/*`, `/api/review/*`, `/api/strategy/*` routes plus a "Plan/Review" frontend tab; chat & voice turns now record learning events for scoring. 88 tests pass, `npm run build` green) · **IT15 0.5.0 vector RAG ✅ (2026-09-09)** (sqlite-vec + Node 24 `node:sqlite` semantic retrieval; `RAG_BACKEND=hybrid` vector-KNN + keyword fallback, embedding reuses the main LLM and auto-degrades if `EMBEDDING_MODEL` unset; wired into `/api/resource/search`; 95 tests pass) · **IT16 0.6.0 multi-node + traffic replay recording ✅ (2026-09-10)** (new `src/tracing/`: `ReplayRecorder` saves every chat/voice turn to `data/threads/` as frozen threads (idempotent), `sampleThreads` does layered sampling with failure-first + semantic dedup, and `GoldenDataset` maintains a golden set readable by `loadFrozenThreads`; new `src/locks/` distributed locks (single-process / file / SQLite) wrap the reflection/eval schedulers so concurrent instances execute a task only once; recording is a pluggable middleware defaulting on, no Kafka in MVP. 105 tests pass, `npm run build` green) · **IT17 0.7.0 MCP Server ✅ (2026-09-10)** (new `src/mcp/`: a shared `McpContext` reuses the same engines/storage/providers as the Web assembly; `POST /mcp` on the existing Fastify server speaks MCP JSON-RPC 2.0 — `tools/list` returns the 7 tools wrapped as `{ tools: [...] }` with strict `additionalProperties:false` input schemas and `tools/call` dispatches `chat_socratic`/`get_learner_profile`/`trigger_reflection`/`confirm_upgrade`/`summarize_resource`/`plan_generate`/`review_generate` with the same semantics as the Web APIs and standard error codes (MethodNotFound/InvalidParams/etc.); disabled via `MCP_ENABLED=false` without affecting the Web service. 120 tests pass, `npm run build` green).
+1. Open `http://127.0.0.1:5173`.
+2. On the **对话** tab, enter a topic (e.g. `微积分`) and answer a question — short or hesitant answers are
+   classified `confused`; two in a row escalate from a focused follow-up to a hint.
+3. Check **学习画像** to see the profile the dialogue has built.
+4. On **计划/复盘** generate a plan, confirm it, then generate a review.
+
+## Configuration
+
+All configuration is environment variables, read from `.env` (not committed). The essential ones:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LLM_PROVIDER` | `doubao` | Active model id; one of the built-in `doubao` / `deepseek` / `qwen`, or any id from `LLM_EXTRA_MODELS`. |
+| `QWEN_API_KEY` | — | Key for the Qwen (DashScope compatible) endpoint. |
+| `DOUBAO_API_KEY` | — | Key for the Doubao (Volcengine Ark) endpoint. |
+| `DEEPSEEK_API_KEY` | — | Key for the DeepSeek endpoint. |
+| `LLM_EXTRA_MODELS` | — | JSON array of `{id, baseURL, apiKey, model}` — adds any OpenAI-compatible model without code changes. |
+| `JUDGE_PROVIDER` / `JUDGE_MODEL` | follow main model | Stronger model used only as the evaluation judge. |
+| `PORT` | `5173` | Web service port (bound to `127.0.0.1`). |
+| `STORAGE_DIR` | `./data` | SQLite database, plans, reviews, reflections, audio. |
+| `KNOWLEDGE_DIR` | `./knowledge/skills` | `book-to-skill` markdown and RAG source. |
+| `RAG_BACKEND` | `keyword` | `keyword`, or `hybrid` for semantic retrieval (also needs `EMBEDDING_MODEL`). |
+| `CONVERSATION_MAX_HISTORY` | `20` | Turns of history feeding consecutive-signal decisions (bounded to limit token growth). |
+| `MCP_ENABLED` | `true` | Register the MCP endpoint at `/mcp`. |
+| `REFLECTION_CRON` | `0 19 * * 5` | Weekly self-reflection schedule (Fri 19:00). |
+| `TRACING_ENABLED` | `true` | Record real conversations as frozen threads for replay-based evaluation. |
+
+See [`.env.example`](.env.example) for the complete list (voice, plan/review weights, eval cadence,
+multi-node deployment, distributed locks).
+
+> **Voice is Mock unless configured.** Without `ASR_APPID` / `ASR_ACCESS_TOKEN` / `TTS_APPID` /
+> `TTS_ACCESS_TOKEN`, ASR returns placeholder text and TTS returns silence. The service prints a startup
+> warning and `/api/voice/chat` returns `voiceDegraded: true` — it is never silently faked.
+
+## MCP integration
+
+The MCP server is mounted on the same port as the web service (Streamable HTTP, protocol `2025-06-18`,
+`MCP_ENABLED=false` to disable). Handshake, version negotiation, `Mcp-Session-Id` sessions, `ping`,
+`DELETE`, and Origin validation are implemented per spec.
+
+Seven tools are exposed:
+
+| Tool | Purpose |
+| --- | --- |
+| `chat_socratic` | One Socratic turn: classify signal → update profile → return a teaching action. |
+| `get_learner_profile` | Read the learner profile (optionally per topic). |
+| `trigger_reflection` | Generate the weekly upgrade document (draft). |
+| `confirm_upgrade` | Confirm a reflection draft. |
+| `summarize_resource` | Structured summary of a book/paper/video into `knowledge/skills/`. |
+| `plan_generate` | Generate a study plan draft for a topic. |
+| `review_generate` | Generate a review draft with 4-dimension weighted scores. |
+
+Read tools are safe to call directly. **Tools that change state (`confirm_upgrade`) keep human
+confirmation as a required step** — that separation is deliberate, not incidental.
+
+## Development
+
+```sh
+npm run dev
+npm run build
+npm start
+npm test
+npx tsc --noEmit
+```
+
+`npm test` runs the `node:test` suites in `test/`; `npx tsc --noEmit` is a type check with no output.
+
+Helper scripts (run `npm run build` first):
+
+```sh
+npm run seed:threads
+npm run voice:verify
+npm run verify:bug004
+npm run assess:sample
+```
+
+`seed:threads` writes the built-in teaching seed threads into `data/threads/` (idempotent) and
+`voice:verify` checks the TTS→ASR round trip, reporting Mock mode when unconfigured. `verify:bug004`
+asserts conversation-history behavior in-process. `assess:sample` is the evaluation-sample readiness gate
+(exit `1` while real data is insufficient).
+
+`assess:sample` exists because the evaluation thresholds were originally calibrated against only three
+frozen threads, while the design target is 20–30 sampled per week. It counts **real** threads separately
+from the hand-written seed threads (`t-seed-*`) and exits non-zero while real data is insufficient — seed
+data must never be used to calibrate thresholds, because it would produce a falsely passing verdict.
+
+### Project structure
+
+```
+src/
+  web/          Fastify REST routes + static frontend hosting
+  mcp/          MCP server (Streamable HTTP, JSON-RPC, tool registry)
+  engines/      socratic · profile · reflection · resource · plans · skills · skillgen · eval
+  providers/    LLM (OpenAI-compatible) · ASR · TTS · search · reminder
+  storage/      SQLite (profiles, plans, reviews, conversations, events) · RAG · vectors
+  scheduler/    weekly reflection + weekly/monthly evaluation cron
+  locks/        distributed locks (in-process · file · SQLite)
+  tracing/      recording, sampling, golden dataset, replay
+public/         single-file Vue 3 frontend
+test/           node:test suites
+docs/           requirements, design, development plan, assessment notes
+knowledge/skills/   book-to-skill output (runtime knowledge source)
+data/           runtime state — SQLite, plans, reviews, audio, threads (not committed)
+```
+
+### Testing notes
+
+Tests use the built-in `node:test` runner. Route-level behavior is covered through Fastify's
+`app.inject()` rather than by calling handlers directly — a regression in v0.7.0 returned `{}` from
+`POST /mcp` while all function-level tests passed, so endpoint-level assertions are required for new routes.
+
+## Evaluation and self-evolution
+
+The project treats "did this change actually help?" as a measurable question rather than a matter of taste:
+
+1. Real conversations are recorded as **frozen threads** (`data/threads/`).
+2. A change is described as a candidate **snapshot** (active skill set / strategy configuration).
+3. Baseline and candidate are replayed over the same threads and scored by an LLM judge against a rubric,
+   with an A/B win rate (`data/evals/<date>_<engine>_<kind>.json`).
+4. The verdict is advisory (`accepted` / `rejected` / `needs_review`) — **applying it is a human step**.
+
+Generated capability skills follow the same path: knowledge markdown → LLM rule extraction → generated
+TypeScript skill draft → evaluation gate → human approval → `data/skills/active.json`.
+
+## Known limitations
+
+These are stated plainly because they affect whether the project is useful to you:
+
+- **Evaluation is under-sampled.** Thresholds were validated against very little real data. Run
+  `npm run assess:sample` to see the current state.
+- **Recorded threads are single-turn.** The recording layer stores one user/agent pair, so frozen threads do
+  not exercise consecutive-signal logic during replay.
+- **Voice is unverified end-to-end** without real ASR/TTS credentials (Mock mode by default).
+- **Single user, no auth.** `learnerId` is hardcoded to `local-user`; there is no login or tenant isolation.
+- **No container image.** Containerized deployment is planned, not built.
+- **No license file yet.** The repository does not currently declare a license; treat it as all-rights-reserved
+  until one is added.
 
 ## Roadmap
 
-- **Phase 1 (target 0.1.0)**: text Socratic dialogue + profile/adaptive + reflection loop + web UI + non-realtime voice + resource engine/basic RAG
-- **Phase 1.5 (target 0.2.0)**: pluggable engine skills (teaching/profile adapt via multiple addable/adjustable skills) + self-built evaluation gate (snapshot baseline + rubric scoring + A/B win rate, weekly sampling & monthly full replay, human approval; unified eval interface switchable across frameworks)
-- **Phase 1.6 (target 0.4.0)**: study plan + review stages (plan/review md + cross-check + weighted anchor reflection + combined weighted evolution eval) ✅
-- **0.5.0 (done)**: vector RAG / semantic retrieval — sqlite-vec (zero new infra, keywords kept as fallback backend) ✅
-- **0.6.0 (done)**: multi-node deployment + production traffic replay recording — stateless web scale-out + SQLite primary/replica + distributed lock for scheduled jobs + pluggable recording layer (no Kafka in MVP) ✅
-- **0.7.0 (done)**: MCP Server — expose `chat_socratic` / `get_learner_profile` / `trigger_reflection` / `confirm_upgrade` / `summarize_resource` / `plan_generate` / `review_generate` via HTTP JSON-RPC at `POST /mcp` (shared `src/mcp`) ✅
-- **Phase 2**: realtime two-way voice + containerized deployment
-- **Phase 3**: reminder channel expansion (email / WeChat) + RAG optimization
+- **0.1.0** — text dialogue, profile/adaptation, reflection loop, web UI, non-realtime voice, basic RAG
+- **0.2.0** — pluggable engine skills, self-built evaluation gate
+- **0.3.0** — `when`-to-use gating, skill combination/arbitration, provider switching, dedicated judge
+- **0.4.0** — study plan + review stages, cross-check, anchor reflection, combined weighted evolution
+- **0.5.0** — vector RAG / semantic retrieval (`sqlite-vec`)
+- **0.6.0** — multi-node deployment, distributed locks, traffic replay recording
+- **0.7.0** — MCP server (Streamable HTTP)
+- **Next** — realtime two-way voice, containerized deployment, reminder channel expansion, RAG optimization
 
-See [docs/development-plan.md](docs/development-plan.md) for details.
+See [docs/development-plan.md](docs/development-plan.md) for the full plan and per-iteration records, and
+[docs/design/agentification-assessment.md](docs/design/agentification-assessment.md) for the cost/benefit
+assessment of moving the orchestration layer to an LLM-driven agent loop.

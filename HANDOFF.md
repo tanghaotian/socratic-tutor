@@ -93,6 +93,26 @@
 13. **（✅ 已完成，2026-09-13）MCP 协议对齐（Streamable HTTP 生命周期）**：详见下节。经官方 MCP SDK v1.29.0 实测握手与调用通过，已可被 DSH `dsh-mcp-client` 以 `transport: streamable-http` 接入。
 14. **（✅ 已完成，2026-09-13）BUG-004 修复：`history` 恒为空导致连续信号逻辑是死代码**：`src/web/index.ts`、`src/mcp/tools.ts` 三处硬编码 `history: []`，导致 `latestConsecutive` 与 `consecutiveHit`（「连续 2 次 confused → hint」）**在真实服务里永不触发**。修复：SQLite 新增 `conversations`/`conversation_turns` 两表 + 共享编排 `src/engines/conversation.ts`（`recordTurn`，**先读历史再落库本轮**）收敛三处重复实现；`CONVERSATION_MAX_HISTORY`（默认 20）给历史长度设界。顺带修掉 MCP 侧 `updateFromSignal` 漏 `await`。验收：`test/conversation.test.ts` 7 例（含 `app.inject()` HTTP 端到端）+ `npm run verify:bug004` 8 项全过。详见 development-plan §2C。
 
+## README 规范化（2026-09-13）
+
+**背景**：原 `README.md` / `README_cn.md` 不符合 GitHub 惯例——文件名非标准、无语言切换器、正文含 emoji、把 8KB 的逐迭代进度流水塞在正文。
+
+**改动**：
+- **`README_cn.md` → `README.zh.md`**（`git rm` + 新建），对齐 GitHub/DSH 的双语命名与配对约定。
+- **语言切换器**：英文侧紧随 H1 为 `English | [中文](README.zh.md)`，中文侧为 `[English](README.md) | 中文`。
+- **结构重排为 GitHub 规范章节**：概述 → Features/功能 → Architecture/架构 → Quick start/快速开始 → Configuration/配置 → MCP integration/MCP 集成 → Development/开发（含项目结构、测试说明）→ Evaluation/评测与自我进化 → Known limitations/已知限制 → Roadmap/开发计划。
+- **去掉全部 emoji**（原中文版 5 处 ✅ 与 1 处 ★），状态改用文字/表格表达。
+- **进度流水移出正文**：逐迭代长段改为精炼的 Roadmap 列表，细节指向 `docs/development-plan.md`。
+- **新增「已知限制」章节**：如实列出评测样本不足、录制线程为单轮、语音未端到端验证、单用户无鉴权、无容器镜像、**尚无许可证文件**。
+
+**顺带修正的事实错误**：`package.json` 原声明 `engines.node: ">=18.0.0"`，但存储层使用 Node 内置 `node:sqlite`（Node 22+ 才有），声明与实际不符——已对齐为 `>=22.0.0` 并在 README 中说明。
+
+**新增校验**：`scripts/verify-readme-pairing.mjs`（`npm run verify:readme`）把 DSH 的双语配对契约机械化——标题层级/顺序、列表种类与条目数、表格行列数必须一一对应；**命令示例代码块（`sh`）必须逐字节一致**（命令与参数不翻译，解释放在块外正文，这也是 DSH README 的实际做法）；**结构图代码块**（架构图、目录树）必须翻译，但校验行数与缩进骨架等价。当前：结构元素 77 项、代码块 6 个、语言切换器齐备，校验通过。
+
+> **校验脚本已实际发挥作用**：首次运行即抓出「中文侧在 shell 代码块内翻译了注释」导致两侧不逐字节一致——按 DSH 约定改为代码块纯命令 + 解释移到正文后通过。
+
+---
+
 ## MCP 协议对齐（2026-09-13）
 
 **背景**：此前 `/mcp` 仅实现 `tools/list` 与 `tools/call`，**缺 MCP 生命周期**——实测 `initialize` 返回 `-32601 未支持的方法`。任何标准 MCP 客户端（含 DSH 用的官方 SDK）首个请求都是 `initialize`，故该端点**实际无法被任何客户端接入**。
